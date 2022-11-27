@@ -1,0 +1,323 @@
+---
+title: "New York Times: 100 Years Ago and Now"
+author: "Jue Zhou"
+date: "12/3/2019"
+output: github_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+message = FALSE,
+error = FALSE)
+
+library(tidyverse)
+library(here)
+library(knitr)
+library(ggwordcloud)
+library(tidytext)
+
+```
+
+## Introduction
+
+How did the newspapers like 100 years ago and how were they different from newspapers now? Here I continue to use one of the New York Times Developer APIs, Archive API, to make a comparative analysis into the New York Times 100 years ago and now. 
+
+This API returns an array of NYT articles for a given month, going back to 1851.  More detailed introduction of this API can be accessed [here](https://developer.nytimes.com/docs/archive-product/1/overview).
+
+In this work, I am going to conduct a sentiment analysis on the abstracts of all the articles in November in 1919 and 2019.
+
+```{r function}
+# define a function to create the url and use NYT Archive API to return the array of articles of a certain month
+get_archive <- function(year, month) {
+  nyt_key <- getOption("nyt_key")
+  apiurl <- str_c(
+    "https://api.nytimes.com/svc/archive/v1/",
+    year,
+    "/",
+    month,
+    ".",
+    "json?",
+    "api-key=",
+    nyt_key
+  )
+  archive <- apiurl %>%
+    httr::GET() %>%
+    httr::content() %>%
+    as_tibble() 
+}
+
+```
+
+
+## Archive of November 2019 and 1919
+
+In November 2019, New York Times published 6517 articles in total. 
+
+In November 1919, surprisingly, New York Times published 10184 articles in total. But it makes sense if we consider that the articles in 1919 were much shorter, and birth notices, wedding annoucements, and obituaries were common parts of newpapers at that time.
+
+
+```{r archive2019, cache = TRUE}
+# fetch the NYT archive in 2019.11
+archive_2019 <- get_archive(2019, 11)
+archive_2019 <- archive_2019 %>%
+  unnest_longer(response) %>%
+  unnest_wider(response) 
+
+abstract_2019 <- archive_2019[-c(1),] %>%
+  mutate(number = row_number()) %>%
+  select(number, abstract, section_name)
+
+# save the data in csv format
+write.csv(abstract_2019, file = "data/nyt_2019.csv")
+
+# count the number of articles in each section
+abstract_2019 %>%
+  group_by(section_name) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  rename("Section Name" = "section_name", "Number" = "count") %>%
+  kable(caption = "Distribution across Sections, November 2019")
+
+```
+
+
+New York Times in 2019 publishes the articles in more than 40 different sections, and the most frequent ones are **U.S, Opinion**, and **World**. The number of articles published in U.S. section doubles that in Opinion.
+
+
+```{r archive1919, cache = TRUE}
+# fetch the data for 1919.11
+archive2 <- get_archive(1919, 11)
+archive_1919 <- archive2 %>%
+  unnest_longer(response) %>%
+  unnest_wider(response)
+
+abstract_1919 <- archive_1919[-c(1), ] %>%
+  mutate(number = row_number()) %>%
+  select(number, snippet, type_of_material)
+
+write.csv(abstract_1919, file = "data/nyt_1919.csv")
+
+# count the number of articles in each section
+abstract_1919 %>%
+  group_by(type_of_material) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  rename("Type of Material" = "type_of_material", "Number" = "count") %>%
+  kable(caption = "Distribution across Types, November 1919")
+```
+
+
+New York Times back in 1919 did not really have different sections, but it did seperate front pages, editorials from articles. Obituaries, letters, marriage announcements and birth notices also constituted as a substantial part of the newspapers.
+
+
+
+## Word Frequency
+
+```{r wf2019, cache = TRUE}
+# transform the abstract into tokens and filter numbers and stop words
+abstract_token1 <- abstract_2019 %>%
+  unnest_tokens(output = word, input = abstract) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>% 
+  anti_join(stop_words)
+
+set.seed(123)
+abstract_token1 %>%
+  group_by(word) %>%
+  count(sort = TRUE) %>%
+  # keep only top 200 words for wordcloud
+  ungroup() %>%
+  top_n(n = 200, wt = n) %>%
+  mutate(angle = 90 * sample(c(0, 1), n(), replace = TRUE, prob = c(70, 30))) %>%
+  ggplot(aes(
+    label = word,
+    size = n,
+    angle = angle
+  )) +
+  geom_text_wordcloud_area(rm_outside = TRUE) +
+  scale_size(range = c(1, 15)) +
+  ggtitle("The Most frequent words in NYT in Noverber 2019") +
+  theme_minimal()
+```
+
+```{r wf1919, cache = TRUE}
+abstract_token2 <- abstract_1919 %>%
+  unnest_tokens(output = word, input = snippet) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>%
+  anti_join(stop_words)
+
+set.seed(123)
+abstract_token2 %>%
+  # filter words indicating time
+  filter(word != "nov" & word != "yesterday" & word != "night" & word != "afternoon") %>% 
+  group_by(word) %>%
+  count(sort = TRUE) %>%
+  # keep only top 200 words for wordcloud
+  ungroup() %>%
+  top_n(n = 200, wt = n) %>%
+  mutate(angle = 90 * sample(c(0, 1), n(), replace = TRUE, prob = c(70, 30))) %>%
+  ggplot(aes(
+    label = word,
+    size = n,
+    angle = angle
+  )) +
+  geom_text_wordcloud_area(rm_outside = TRUE) +
+  scale_size(range = c(1, 15)) +
+  ggtitle("The Most frequent words in NYT in Noverber 1919") +
+  theme_minimal()
+
+```
+
+## Sentiment analysis
+
+```{r sentiment2019, cache = TRUE}
+abstract_bing1 <- abstract_token1 %>% 
+  inner_join(get_sentiments("bing"))
+
+abstract_bing1 %>% 
+  filter(word != "trump") %>% #obviously most "trump" appearing in the document refers to President Trump, it makes more sense to filter it out in sentiment analysis
+  group_by(sentiment) %>% 
+  count(word, sort = TRUE) %>% 
+  top_n(10) %>% 
+  ungroup() %>% 
+  mutate(word = reorder_within(word, n, sentiment)) %>% 
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  # used with reorder_within() to label the axis tick marks
+  scale_x_reordered() +
+  facet_wrap(~ sentiment, scales = "free_y") +
+  labs(title = "Sentimental words used in New York Times, November 2019",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+```
+
+The most used positive and negative words in November 2019 are shown in the graph above. "Trump" is coded as positive, but as in the context it mainly refers to President Trump, I just left it out.
+
+```{r section2019, cache = TRUE}
+ab_bysection <- abstract_2019 %>%
+  # filter the sections having more than 250 articles
+  add_count(section_name, sort = TRUE) %>% 
+  filter(n > 250) %>% 
+  select(-n) %>% 
+  unnest_tokens(output = word, input = abstract) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>% 
+  anti_join(stop_words) %>% 
+  inner_join(get_sentiments("bing"))
+
+ab_bing <- ab_bysection %>% 
+  filter(word != "trump") %>% 
+  group_by(section_name, sentiment) %>% 
+  count(word, sort = TRUE) %>% 
+  group_by(section_name, sentiment) %>% 
+  top_n(5) %>% 
+  ungroup()
+
+# most frequently used positive words by section
+ab_bing %>% 
+  filter(sentiment == "positive") %>% 
+  mutate(word = reorder_within(word, n, section_name)) %>%
+  ggplot(aes(word, n)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap(~ section_name, scales = "free_y") +
+  labs(title = "Positive words used in New York Times by section, November 2019",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+
+# most frequently used negative words by section
+ab_bing %>% 
+  filter(sentiment == "negative") %>% 
+  mutate(word = reorder_within(word, n, section_name)) %>%
+  ggplot(aes(word, n)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap(~ section_name, scales = "free_y") +
+  labs(title = "Negative words used in New York Times by section, November 2019",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+
+```
+
+Above are the most frequent positive and negative words used in New York Times in the biggest 7 sections, which reflects some of the common expressions in these parts of reports.
+
+As the impeachment for Trump is on the way and the world is witnessing protests over widespread areas, the negative words make much sense.
+
+However, sometimes sentiment analysis is not that reliable in that some words that can be interpreted as more neutral or dual are classfied to one single sentimental meaning.
+
+```{r sentiment1919, cache = TRUE}
+abstract_bing2 <- abstract_token2 %>%
+  inner_join(get_sentiments("bing"))
+
+abstract_bing2 %>%
+  group_by(sentiment) %>%
+  count(word, sort = TRUE) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  mutate(word = reorder_within(word, n, sentiment)) %>%
+  ggplot(aes(word, n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap( ~ sentiment, scales = "free_y") +
+  labs(title = "Sentimental words used in New York Times, November 1919",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+```
+
+For 1919, it was a world recently recovered from World War I, and US was seeing strikes of coal workers. It is no wonder to see "peace" as the most frequently used positive word and "strike" as the negative counterpart.
+
+```{r section1919, cache = TRUE}
+# extract 10 most frequent positive/negative words per section
+ab_bing2 <- abstract_bing2 %>%
+  group_by(type_of_material, sentiment) %>%
+  count(word, sort = TRUE) %>%
+  group_by(type_of_material, sentiment) %>%
+  top_n(10) %>%
+  ungroup()
+
+# most frequently used positive words by section
+ab_bing2 %>%
+  filter(sentiment == "positive") %>%
+  filter(
+    type_of_material == "Article" |
+    type_of_material == "Editorial" |
+    type_of_material == "Front Page"
+  ) %>%
+  mutate(word = reorder_within(word, n, type_of_material)) %>%
+  ggplot(aes(word, n)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap( ~ type_of_material, scales = "free_y") +
+  labs(title = "Positive words used in New York Times by section, November 1919",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+
+# most frequently used negative words by section
+ab_bing2 %>%
+  filter(sentiment == "negative") %>%
+  filter(
+    type_of_material == "Article" |
+    type_of_material == "Editorial" |
+    type_of_material == "Front Page"
+  ) %>%
+  mutate(word = reorder_within(word, n, type_of_material)) %>%
+  ggplot(aes(word, n)) +
+  geom_col(show.legend = FALSE) +
+  scale_x_reordered() +
+  facet_wrap( ~ type_of_material, scales = "free_y") +
+  labs(title = "Negative words used in New York Times by section, November 1919",
+       x = NULL,
+       y = "Number of occurences") +
+  coord_flip()
+
+```
+
+Also, in analysis by section (I did not include letters and notices), results appear much alike.
+
+```{r, include=FALSE}
+devtools::session_info()
+```
+
